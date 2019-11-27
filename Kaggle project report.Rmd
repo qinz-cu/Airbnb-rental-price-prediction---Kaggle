@@ -1,0 +1,1297 @@
+---
+title: Kaggle Project Report
+
+author: Qin Zhang, UNI-qz2387
+
+date: November 25, 2019
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 5
+---
+
+## Project Introduction
+
+People interested in renting an apartment or home, sharing information about themselves and their property on Airbnb. This project used the data of renter, property, and reviews to predict the rental price. The result is evaluated by RMSE score. For more details, please see [Kaggle](https://www.kaggle.com/c/pricelala2/overview).
+
+
+
+## Data Overview
+
+
+
+### Read Data
+
+After setting the working directory, read the data using read.csv. I can also use read_csv-library(readr) or fread-library (data.table), but it depends on computers, it might induce problems on various computers. By my own experience, using fread would be fastest.
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+data = read.csv('analysisData.csv')
+scoring = read.csv('scoringData.csv')
+```
+
+We have analysis data to build models and scoring data to test our models. Thus, whatever we do to analysis data, we should also preprocess the scoring data in the same way to predict models without error.
+
+
+
+### Data Structure
+
+``` {r}
+dim(data)
+dim(scoring)
+```
+
+Analysis dataset has 36,839 observations and 91 features, while scoring dataset has the same features as data except the price column. We could also check the data types.
+
+``` {r, eval = FALSE}
+head(data, 10)
+str(data)
+```
+
+The dataset contains factor, numeric, and integer data. Notice that date column such as last_review, first_review, and host_since are loaded as factor. Also, character data such as summary, neighbourhood, description, etc. are loaded as factor. We might change that later.
+
+
+
+## Data Exploration
+
+
+
+### Check Missing Data
+
+First, we might check the missing data in order to preprocess them in later steps.
+
+``` {r}
+missing_col_data = colSums(is.na(data)); missing_col_data[missing_col_data > 0]
+```
+
+If we only focus on the feature we might use, columns like beds, square_feet, weekly_price, monthly_price, security_deposit, cleaning_fee, and reviews_per_month columns have most missing values in data set.
+
+``` {r}
+missing_col_score = colSums(is.na(scoring)); missing_col_score[missing_col_score > 0]
+```
+
+For scoring dataset, square_feet, weekly_price, monthly_price, security_deposit, cleaning_fee have most missing values.
+
+
+
+## Data Preprocessing
+
+
+
+### Impute Missing Value
+
+
+
+
+
+
+#### Numeric Missing Data Imputation
+
+Using the mean value to impute the missing data is the most common method. After impute the NA, we should check if it works.
+
+``` {r}
+for (i in 1:ncol(data)) {
+    if (is.numeric(data[,i])) {
+        data[is.na(data[,i]), i] = mean(data[,i], na.rm = TRUE)
+    }
+}
+missing_col_data = colSums(is.na(data)); missing_col_data[missing_col_data > 0]
+```
+
+It seems like only host_about contains NA right now and all the numeric columns' missing data have been imputed. Then, use the same method on the scoring data.
+
+``` {r}
+for (i in 1:ncol(scoring)) {
+    if (is.numeric(scoring[,i])) {
+        scoring[is.na(scoring[,i]), i] = mean(scoring[,i], na.rm = TRUE)
+    }
+}
+missing_col_score = colSums(is.na(scoring)); missing_col_score[missing_col_score > 0]
+```
+
+
+
+
+
+
+#### Factor Missing Data Replacement
+
+Due to the read.csv method, character data such as summary, name, or description are all loaded as factor. So it might contains blank("") instead of NA. We should apply these blank observation and use addNA function to convert a NA into a factor.
+
+``` {r}
+data[apply(data, 2, function(x) x=="")] = NA
+scoring[apply(scoring, 2, function(x) x=="")] = NA
+
+for (i in 1:ncol(data)) {
+    if (is.factor(data[,i])) {
+        data[,i] = addNA(data[,i])
+    }
+}
+sum(is.na(data$summary))
+
+for (i in 1:ncol(scoring)) {
+    if (is.factor(scoring[,i])) {
+        scoring[,i] = addNA(scoring[,i])
+    }
+}
+sum(is.na(scoring$summary))
+```
+
+
+
+
+
+
+#### Convert Data Type
+
+In this part, some features' data type have been changed so that they could be transformed or used in the feature engineering process. For example, the date should be date type, not factor. We should manual select the columns here without using the function. First, the date column.
+
+``` {r}
+data$host_since = as.Date(data$host_since)
+data$first_review = as.Date(data$first_review)
+data$last_review = as.Date(data$last_review)
+
+scoring$host_since = as.Date(scoring$host_since)
+scoring$first_review = as.Date(scoring$first_review)
+scoring$last_review = as.Date(scoring$last_review)
+```
+
+Then, the character columns.
+
+``` {r}
+data$summary = as.character(data$summary)
+data$description = as.character(data$description)
+data$transit = as.character(data$transit)
+data$host_about = as.character(data$host_about)
+data$amenities = as.character(data$amenities)
+data$host_verifications = as.character(data$host_verifications)
+data$space = as.character(data$space)
+data$neighborhood_overview = as.character(data$neighborhood_overview)
+
+scoring$summary = as.character(scoring$summary)
+scoring$description = as.character(scoring$description)
+scoring$transit = as.character(scoring$transit)
+scoring$host_about = as.character(scoring$host_about)
+scoring$amenities = as.character(scoring$amenities)
+scoring$host_verifications = as.character(scoring$host_verifications)
+scoring$space = as.character(scoring$space)
+scoring$neighborhood_overview = as.character(scoring$neighborhood_overview)
+```
+
+
+
+## Feature Selection
+
+I didn't run forward or backward stepwise to select the features. Instead, I implemented the feature engineering and built models based on business logic. For example, room_type and renters' neighbourhood might be important for predicting the price. However, the features like zipcode seems irrelevant.
+
+
+
+## Feature Engineering
+
+A few columns cannot be directly used in models and we should transformed them or create dummy variables. Also, we can create new variables based on current features.
+
+
+
+### Calculate Words For Character
+
+Columns like summary, description, and transit are character and we could calculate the total words for each of them using wordcount()-library(ngram) and create new features.
+
+``` {r, results = "hide"}
+library(ngram)
+library(dplyr)
+data = data %>%
+    rowwise() %>%
+    mutate(summary_wc = wordcount(summary),
+           description_wc = wordcount(description),
+           transit_wc = wordcount(transit),
+           host_about_wc = wordcount(host_about),
+           amenities_count = wordcount(amenities),
+           space_wc = wordcount(space),
+           neighborhood_overview_wc = wordcount(neighborhood_overview))
+
+scoring = scoring %>%
+    rowwise() %>%
+    mutate(summary_wc = wordcount(summary),
+           description_wc = wordcount(description),
+           transit_wc = wordcount(transit),
+           host_about_wc = wordcount(host_about),
+           amenities_count = wordcount(amenities),
+           space_wc = wordcount(space),
+           neighborhood_overview_wc = wordcount(neighborhood_overview))
+```
+
+
+
+
+
+
+### Create Dummy Variables For Character
+
+Features like amenities and host_verifications are consisted of many words, so we need to create dummy variables for each element in this columns. We would use the stringr and qdapTools in this step.
+
+``` {r, result = "hide", message = FALSE}
+library(stringr)
+library(qdapTools)
+```
+
+First, let's preprocess the **amenities** column.
+
+``` {r}
+## First, remove the irrelevant sign in the column
+data$amenities = gsub("\\.", "", data$amenities)  ## remove the dot sign 
+data$amenities = data$amenities %>% stringr::str_replace_all("\\s", "")   ## remove the space
+data$amenities = noquote(data$amenities)   ##  remove quotation sign
+
+## Second split the column and create dummy variables
+data = cbind(data,mtabulate(strsplit(as.character(data$amenities), ',')))
+
+## Check if it works
+head(data$amenities, 3)
+### we could also use colnames(data)
+```
+
+Second, we could use the same method on **host_verifications** column.
+
+``` {r}
+## First, remove other signs in the column like [, ], . 
+data$host_verifications = gsub("\\[", "", data$host_verifications) ## remove [
+data$host_verifications = gsub("\\]", "", data$host_verifications) ## remove ]
+data$host_verifications = gsub("\\'", "", data$host_verifications) ## remove '
+data$host_verifications = data$host_verifications %>% stringr::str_replace_all("\\s", "") ## remove the space
+data$host_verifications = noquote(data$host_verifications) ##  remove quotation sign
+
+## Create dummy variables
+data = cbind(data, mtabulate(strsplit(as.character(data$host_verifications), split = ','))) 
+
+## calculate the wordcount for the text column chosen ###
+data$host_identity_verified = as.character(data$host_identity_verified)
+data = data %>%
+    rowwise() %>%
+    mutate(verification_count = wordcount(host_identity_verified))
+
+## Check if it works
+head(data$host_verifications, 3)
+```
+
+Finally, we do the same in scoring dataset.
+
+``` {r, result = "hide"}
+## First, the amenities column
+scoring$amenities = gsub("\\.", "", scoring$amenities)  
+scoring$amenities = scoring$amenities %>% stringr::str_replace_all("\\s", "")   
+scoring$amenities = noquote(scoring$amenities)  
+scoring = cbind(scoring,mtabulate(strsplit(as.character(scoring$amenities), ',')))
+
+## Then, the host_identifications column
+scoring$host_verifications = gsub("\\[", "", scoring$host_verifications)
+scoring$host_verifications = gsub("\\]", "", scoring$host_verifications)
+scoring$host_verifications = gsub("\\'", "", scoring$host_verifications)
+scoring$host_verifications = scoring$host_verifications %>% stringr::str_replace_all("\\s", "")
+scoring$host_verifications = noquote(scoring$host_verifications)
+scoring = cbind(scoring, mtabulate(strsplit(as.character(scoring$host_verifications), split = ',')))
+
+scoring$host_identity_verified = as.character(scoring$host_identity_verified)
+scoring = scoring %>%
+    rowwise() %>%
+    mutate(verification_count = wordcount(host_identity_verified))
+```
+
+Notice that a few variables splitted from ammenities are not valid, so we should change that.
+
+``` {r, result = "hide"}
+colnames(data)[which(colnames(data) == '24-hourcheck-in')] = 'check_in_24'
+colnames(data)[which(colnames(data) == 'Cat(s)')] = 'cat'
+colnames(data)[which(colnames(data) == 'Dog(s)')] = 'dog'
+colnames(data)[which(colnames(data) == 'Otherpet(s)')] = 'otherpet'
+colnames(data)[which(colnames(data) == 'Washer/Dryer')] = 'Washer_and_Dryer'
+colnames(data)[which(colnames(data) == 'Selfcheck-in')] = 'Selfcheck_in'
+colnames(data)[which(colnames(data) == 'Family/kidfriendly')] = 'Family_and_kidfriendly'
+
+colnames(scoring)[which(colnames(scoring) == '24-hourcheck-in')] = 'check_in_24'
+colnames(scoring)[which(colnames(scoring) == 'Cat(s)')] = 'cat'
+colnames(scoring)[which(colnames(scoring) == 'Dog(s)')] = 'dog'
+colnames(scoring)[which(colnames(scoring) == 'Otherpet(s)')] = 'otherpet'
+colnames(scoring)[which(colnames(scoring) == 'Washer/Dryer')] = 'Washer_and_Dryer'
+colnames(scoring)[which(colnames(scoring) == 'Selfcheck-in')] = 'Selfcheck_in'
+colnames(scoring)[which(colnames(scoring) == 'Family/kidfriendly')] = 'Family_and_kidfriendly'
+```
+
+
+
+
+
+
+### Date Columns Transformation
+
+Machine learning models cannot handle date data, so we should transform them into numeric data. These columns includes first_review, last_review, and host_since. For example, we can calculate how many days since the first review created or how many days between the first review and last review. However, the difference between date creates **difftime** type and we should convert it into numeric type after calculation. Also, the NA value should be checked.
+
+``` {r, results = "hide"}
+data$host_since_days = as.numeric(as.Date("2019-11-25") - data$host_since)
+data$first_review_days = as.numeric(as.Date("2019-11-25") - data$first_review)
+data$last_review_days = as.numeric(as.Date("2019-11-25") - data$last_review)
+data$last_first_review_days = as.numeric(data$last_review - data$first_review)
+
+sum(is.na(data$host_since_days))
+data[is.na(data$host_since_days),]$host_since_days = 0
+
+sum(is.na(data$first_review_days))
+data[is.na(data$first_review_days),]$first_review_days = 0
+
+sum(is.na(data$last_review_days))
+data[is.na(data$last_review_days),]$last_review_days = 0
+
+sum(is.na(data$last_first_review_days))
+data[is.na(data$last_first_review_days),]$last_first_review_days = 0
+
+```
+
+Then, do the same thing in scoring data. There is no NA in scoring data, no more actions are needed.
+
+``` {r}
+scoring$host_since_days = as.numeric(as.Date("2019-11-25") - scoring$host_since)
+scoring$first_review_days = as.numeric(as.Date("2019-11-25") - scoring$first_review)
+scoring$last_review_days = as.numeric(as.Date("2019-11-25") - scoring$last_review)
+scoring$last_first_review_days = as.numeric(scoring$last_review - scoring$first_review)
+
+sum(is.na(scoring$host_since_days))
+scoring[is.na(scoring$host_since_days),]$host_since_days = 0
+
+sum(is.na(scoring$first_review_days))
+sum(is.na(scoring$last_review_days))
+sum(is.na(scoring$last_first_review_days))
+```
+
+
+
+
+
+
+### Handle Factor Column With Multiple Levels
+
+Feature like neighbourhood_cleansed has more than **50** levels, which cannot be processed by randomforest or boosting models. Therefore, we need to transform it by selecting no greater than 50 levels.
+
+``` {r}
+### data
+## create a data frame to use the neighbourhood_cleansed
+data1 = data %>%
+    group_by(neighbourhood_cleansed = neighbourhood_cleansed) %>%
+    summarize(record_count_c = n(),     ## count every level's record
+              price_mean_c = mean(price)) %>%  ## calculate each group's mean price
+    arrange(desc(record_count_c))
+head(data1, 3)
+
+## merge the data frame and get the mean price and record counts
+data = merge(data, data1, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"))
+
+class(data$neighbourhood_cleansed)
+
+## select the top 50 levels
+data$neighbourhood_cleansed = as.character(data$neighbourhood_cleansed) ## we need to convert it into character first in order to change the values
+data = data %>%
+    mutate(new_neigh_c = ifelse(record_count_c > 142, neighbourhood_cleansed, "other"))  ## find the top 49 levels and put others into "other" group
+data$neighbourhood_cleansed = as.factor(data$neighbourhood_cleansed)
+data$new_neigh_c = as.factor(data$new_neigh_c)
+```
+
+However, there is no price column in scoring dataset, we should use what we create in analysis dataset and merge with scoring data.
+
+``` {r}
+### scoring
+## create a data frame to use the neighbourhood_cleansed
+scoring1 = scoring %>%
+    group_by(neighbourhood_cleansed = neighbourhood_cleansed) %>%
+    summarize(record_count_c = n()) %>%
+    arrange(desc(record_count_c))
+head(scoring1, 3)
+
+## merge the data frame and get the mean price and record counts
+scoring = merge(scoring, scoring1, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"))
+
+scoring$neighbourhood_cleansed = as.character(scoring$neighbourhood_cleansed)
+scoring = scoring %>%
+    mutate(new_neigh_c = ifelse(record_count_c > 32, neighbourhood_cleansed, "other"))
+scoring$new_neigh_c = as.factor(scoring$new_neigh_c)
+
+## create price_mean_c for score_data 
+data2 = data.frame(neighbourhood_cleansed = data1$neighbourhood_cleansed,
+                           price_mean_c = data1$price_mean_c)
+
+scoring = merge(scoring, data2, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"), all.x = TRUE) 
+### remember to use all.x = TRUE here to keep scoring as a whole
+
+## check the missing value
+sum(is.na(scoring$price_mean_c))
+scoring[is.na(scoring$price_mean_c),]$price_mean_c = mean(scoring$price_mean_c, na.rm = TRUE)
+```
+
+
+
+
+
+
+### Create Mean price By neighborhood_group_cleansed 
+
+Just like the previous step, we could create another price variable based on the neighborhood_group_cleansed column.
+
+``` {r}
+### data 
+## create a data frame to use the mean price of neighbourhood_group_cleansed
+data3 = data %>%
+    group_by(neighbourhood_group_cleansed = neighbourhood_group_cleansed) %>%
+    summarize(price_mean_gc = mean(price))
+
+## merge the data frame and get the mean price
+data = merge(data, data3, by = c("neighbourhood_group_cleansed", "neighbourhood_group_cleansed"))
+
+
+### scoring 
+## merge the data frame and get the mean price and record counts
+scoring = merge(scoring, data3, by = c("neighbourhood_group_cleansed", "neighbourhood_group_cleansed"), all.x = TRUE)
+
+## check missing value
+sum(is.na(scoring$price_mean_gc)) ## there is no NA
+```
+
+
+
+## Data Analysis - Build Models
+
+
+
+### Split Data
+
+To evaluate the models, we could split the analysis dataset and calculate the RMSE based on the test dataset. If we get a good score, then we could submit into the kaggle.
+
+``` {r, message = FALSE}
+library(caret)
+set.seed(617)
+split = createDataPartition(y = data$price,
+                            p = 0.7,
+                            list = F,
+                            groups = 100)
+train = data[split,]
+test = data[-split,]
+nrow(train) + nrow(test) == nrow(data)
+```
+
+
+
+
+
+
+### Linear Models
+
+After building over 20 linear models, I found that using linear models has a ceiling of predicting the rental price and the RMSE will no less than 70 of predicting scoring dataset. Here is the best linear model I have built.
+
+``` {r, message = FALSE}
+m21 = lm(price~bedrooms + cleaning_fee + room_type + minimum_nights 
+         + accommodates + property_type + bathrooms + beds + new_neigh_c 
+         + neighbourhood_group_cleansed + security_deposit + availability_30 + availability_365 
+         + review_scores_rating + transit_wc + host_since_days + reviews_per_month 
+         + last_review_days + first_review_days + extra_people + guests_included
+         + Airconditioning + Dryer + Elevator + Family_and_kidfriendly 
+         + Freestreetparking + Hairdryer + Hangers + Iron + Laptopfriendlyworkspace 
+         + Kitchen+ Lockonbedroomdoor + Oven + Refrigerator + Shampoo
+         + Selfcheck_in + Stove  + TV + selfie + kba + jumio 
+         , data = train)     ## build model
+summary(m21) ## evaluate the predictors importance
+```
+
+Predictors such as bedrooms, cleaning_fee, room_type, accommodates, bathrooms, new_neigh_c, etc. are more important in predicting the rental price.
+
+``` {r, message = FALSE}
+train_test21 = predict(m21)    ##predict on train dataset
+RMSE(train_test21, train$price)   ##calculate the RMSE score 
+
+## convert the new levels of factors in test dataset into train's levels
+test21 = predict(m21, newdata = test)   ## predict test dataset
+RMSE(test21, test$price)   ## calculate the RMSE score
+
+## convert the new levels of factors in scoring dataset into train's levels
+# for property_type column
+scoring$property_type = as.character(scoring$property_type)
+scoring[scoring$property_type == 'Casa particular (Cuba)',]$property_type = 'Apartment'
+scoring[scoring$property_type == 'Castle',]$property_type = 'Apartment'
+scoring[scoring$property_type == 'Farm stay',]$property_type = 'Apartment'
+scoring$property_type = as.factor(scoring$property_type)
+
+#for new_neigh_c column
+scoring$new_neigh_c = as.character(scoring$new_neigh_c)
+scoring[scoring$new_neigh_c == "Theater District",]$new_neigh_c = "Woodside" 
+scoring$new_neigh_c = as.factor(scoring$new_neigh_c)
+
+## predict the scoring dataset
+pred21 = predict(m21, newdata = scoring)    ## if the result is good, then predict the scoring dataset
+```
+
+
+
+
+
+
+### Random Forest
+
+To improve the predictability of models, we could use random forest. It is easier to explain and with large number of trees, the predictability can be improved compared with simple decision trees. Among over 10 random forest model I have built, here is the best one with RMSE score around **57.03**.
+
+``` {r, message = FALSE}
+# install.packages("randomForest")
+library(randomForest)
+trControl12 = trainControl(method = 'cv', number = 5)   ## 5-folder cross validation
+tuneGrid12 = expand.grid(mtry= 20:40)
+set.seed(617)
+cvForest12 = train(price ~ price_mean_c + new_neigh_c + price_mean_gc + bedrooms + cleaning_fee + room_type 
+                        + minimum_nights + accommodates + property_type + bathrooms + beds + neighbourhood_group_cleansed
+                        + security_deposit + availability_30 + availability_365 + review_scores_rating 
+                        + transit_wc + summary_wc+ description_wc+ host_since_days + reviews_per_month 
+                        + last_review_days + first_review_days + extra_people + guests_included
+                        + Airconditioning + Dryer + Elevator + Family_and_kidfriendly + Freestreetparking
+                        + Hairdryer + Iron + Oven + Refrigerator + Shampoo
+                        + Selfcheck_in  + TV + selfie + kba + jumio
+                   , data = train, method = 'rf', ntree= 10, trControl = trControl12,
+                   tuneGrid = tuneGrid12)  # we could use 10 trees first to run faster
+cvForest12
+```
+
+``` {r}
+## to save time, I only used 100 trees to show the result, if the time is limited, we could add the tree number
+forest12 = randomForest(price ~ price_mean_c + new_neigh_c + price_mean_gc + bedrooms + cleaning_fee + room_type 
+                        + minimum_nights + accommodates + property_type + bathrooms + beds + neighbourhood_group_cleansed
+                        + security_deposit + availability_30 + availability_365 + review_scores_rating 
+                        + transit_wc + summary_wc+ description_wc+ host_since_days + reviews_per_month 
+                        + last_review_days + first_review_days + extra_people + guests_included
+                        + Airconditioning + Dryer + Elevator + Family_and_kidfriendly + Freestreetparking
+                        + Hairdryer + Iron + Oven + Refrigerator + Shampoo
+                        + Selfcheck_in  + TV + selfie + kba + jumio
+                        ,data = train, ntree = 200) 
+importance(forest12)   ## see variable importance
+```
+
+``` {r, echo = FALSE}
+plot(forest12)   ## find the most appropriate number for trees
+```
+
+```{r message=FALSE,eval = FALSE}
+
+## predict train dataset
+train_test12 = predict(forest12)
+RMSE(train_test12, train$price)
+
+## predict test dataset
+test_test = predict(forest12, newdata = test)
+RMSE(test_test, test$price)
+
+## predict scoring dataset
+pred_randomforest12 = predict(forest12, newdata = scoring)
+```
+
+
+
+
+
+
+### Boosting
+
+The larger the number of trees, the more the computation complexitity of models. Only increasing the trees can not improve the random forest performance greatly and it would be better to use random forest when finding a "magic" feature. Otherwise, we might consider the boosting to decrease the RMSE. The boosting runs relatively faster than random forest and it can make RMSE smaller if we increase the tree number. Here is the best model among all the boosting models I have trained. The RMSE score is **57.74443** (final private score).
+
+
+``` {r, message = FALSE, warning=FALSE, results = "hide"}
+library(gbm)
+set.seed(617)
+trControl_boost6 = trainControl(method = 'cv', number = 5)  ## use 5-fold cross validation
+tuneGrid_boost6 = expand.grid(n.trees = 200, interaction.depth = c(3,4,5),
+                              shrinkage = c(0.005, 0.001, 0.01), n.minobsinnode = c(5,10,15))  
+## after trying different values of parameters, I found these values are the best according to the cross-validation results
+
+cvBoost6 = train(price ~ price_mean_c + new_neigh_c + price_mean_gc + bedrooms + cleaning_fee + room_type + minimum_nights 
+               + accommodates + property_type + bathrooms + beds + neighbourhood_group_cleansed + host_is_superhost
+               + security_deposit + availability_30 + availability_365 + review_scores_rating + availability_60
+               + transit_wc + summary_wc+ description_wc+ host_since_days + reviews_per_month + cancellation_policy
+               + last_review_days + first_review_days + extra_people + guests_included + availability_90
+               + Airconditioning + Dryer + Elevator + Family_and_kidfriendly + Freestreetparking 
+               + review_scores_cleanliness + Hairdryer + Iron + Oven + Refrigerator + Shampoo + number_of_reviews 
+               + host_about_wc + Selfcheck_in  + TV + selfie + kba + jumio + maximum_nights + host_listings_count 
+               + neighborhood_overview_wc + host_has_profile_pic + monthly_price + review_scores_accuracy
+               ,data = train, method = 'gbm', trControl = trControl_boost6, tuneGrid = tuneGrid_boost6)
+```
+
+``` {r, message = FALSE, warning=FALSE}
+cvBoost6
+```
+
+``` {r, message = FALSE, warning=FALSE}
+## to save time, I only use 2,000 trees here, the best model used 30,000 trees
+boostCV6 = gbm(price ~ price_mean_c + new_neigh_c + price_mean_gc + bedrooms + cleaning_fee + room_type + minimum_nights 
+               + accommodates + property_type + bathrooms + beds + neighbourhood_group_cleansed + host_is_superhost
+               + security_deposit + availability_30 + availability_365 + review_scores_rating + availability_60
+               + transit_wc + summary_wc+ description_wc+ host_since_days + reviews_per_month + cancellation_policy
+               + last_review_days + first_review_days + extra_people + guests_included + availability_90
+               + Airconditioning + Dryer + Elevator + Family_and_kidfriendly + Freestreetparking
+               + review_scores_cleanliness + Hairdryer + Iron + Oven + Refrigerator + Shampoo + number_of_reviews 
+               + host_about_wc + Selfcheck_in  + TV + selfie + kba + jumio + maximum_nights + host_listings_count 
+               + neighborhood_overview_wc + host_has_profile_pic + monthly_price + review_scores_accuracy
+               ,data = train, distribution = "gaussian", 
+               n.trees = 2000,   
+               interaction.depth = 5,
+               shrinkage = 0.005,
+               n.minobsinnode = 5)
+
+summary(boostCV6)
+```
+
+```{r, message=FALSE,eval = FALSE}
+## predict train dataset
+predBoostCV6 = predict(boostCV6, n.trees = 2000)
+RMSE(predBoostCV6, train$price)
+
+## predict test dataset
+predBoostCV6_test = predict(boostCV6, test, n.trees = 2000)
+RMSE(predBoostCV6, test$price)
+
+## predict scoring dataset
+pred_boostscore6 = predict(boostCV6, n.trees = 2000, newdata = scoring)
+```
+
+If the time is permitted, we can try more possibilities of boosting's best values of shrinkage, interaction_depth, and minobsinnode.
+
+
+
+
+
+
+### XGBoosting
+
+Except the random forest and boosting, I also tried the XGBoosting, which is way faster than these two models. However, the XGBoosing only accepts the numeric variables, and thus, we should build dummy variables for factor features and create sparse matrix. Here is the model I have tried and it produced the same RMSE score as best boosting model with **less than a second**.
+
+``` {r, message = FALSE}
+## first load the necessary packages
+library(xgboost)
+library(mltools)
+library(caret)
+library(dplyr)
+library(data.table)
+```
+
+After loading the packages, we should create dummy variables for factor features.
+
+``` {r, message = FALSE}
+data$host_is_superhost = as.factor(data$host_is_superhost)
+data$cancellation_policy = as.factor(data$cancellation_policy)
+scoring$host_is_superhost = as.factor(scoring$host_is_superhost)
+scoring$cancellation_policy = as.factor(scoring$cancellation_policy)
+
+## data
+data_xgboost_test = data %>%   ## select the factor variables we might need when building the models
+    select("id","property_type", "room_type", "new_neigh_c",
+           "neighbourhood_group_cleansed", "host_is_superhost",
+           "cancellation_policy")
+
+data_xgboost_test = as.data.table(data_xgboost_test)
+data_xgboost_oh = one_hot(data_xgboost_test)    ## using one-hot to create dummy variables
+
+data_xgboost = merge(data, data_xgboost_oh, by = "id", all.x = TRUE)   ## merge the dummy columns with the original data
+## could use colnames(data_xgboost) to check
+
+## scoring
+score_xgboost_test = scoring %>%
+    select("id","property_type", "room_type", "new_neigh_c",
+           "neighbourhood_group_cleansed", "host_is_superhost",
+           "cancellation_policy")
+
+score_xgboost_test = as.data.table(score_xgboost_test)
+score_xgboost_oh = one_hot(score_xgboost_test)
+
+score_xgboost = merge(scoring, score_xgboost_oh, by = "id", all.x = TRUE)
+## could use colnames(score_xgboost) to check
+```
+
+Then, split data
+
+``` {r, message = FALSE}
+library(caret)
+set.seed(617)
+split = createDataPartition(y = data_xgboost$price,
+                            p = 0.7,
+                            list = F,
+                            groups = 100)
+train = data_xgboost[split,]
+test = data_xgboost[-split,]
+nrow(train) + nrow(test) == nrow(data_xgboost)
+## could use colnames(score_xgboost) to check
+```
+
+As the dummy variable varies with train, test, and scoring dataset, we should select the specific columns for each dataset and build the models. It seems cumbersome here, but I am currently searching and learning how to handle this smartly.
+
+``` {r, message = FALSE}
+labels = train$price
+ts_labels = test$price
+```
+
+```{r, message=FALSE, warning = FALSE}
+## for the train dataset
+data_variables = train %>%
+    select("accommodates", "bathrooms","bedrooms" ,"beds","security_deposit","cleaning_fee"                                
+           ,"guests_included", "extra_people", "minimum_nights","maximum_nights","availability_30"                             
+           ,"availability_60","availability_90","availability_365","number_of_reviews" , "reviews_per_month"                           
+           ,"summary_wc","description_wc","transit_wc","host_about_wc","amenities_count"                             
+           ,"space_wc","neighborhood_overview_wc", "host_since_days","last_review_days"                            
+           ,"first_review_days","last_first_review_days","check_in_24","Accessible-heightbed"                        
+           ,"Accessible-heighttoilet","Airconditioning","Airpurifier","Babybath"                                    
+           ,"Bedlinens","Breakfast","CableTV","Carbonmonoxidedetector","cat"                              
+           ,"Dishwasher","dog","Doorman","Dryer","Elevator","Essentials","Family_and_kidfriendly"                      
+           ,"Fireextinguisher","Gym","Hairdryer","Handheldshowerhead","Hangers"                                     
+           ,"Heating","Hottub","Hotwater","Hotwaterkettle","Iron","Kitchen"                                     
+           ,"Laptopfriendlyworkspace", "Microwave","Oven"                             
+           ,"Safetycard","Selfcheck_in","Shampoo","Stove","toilet","TV"                                          
+           ,"Washer","Washer_and_Dryer","Waterfront","Wifi","email"                                       
+           ,"facebook", "google","government_id","identity_manual","jumio"                                       
+           ,"kba","phone","reviews","selfie","verification_count"                          
+           ,"record_count_c", "price_mean_c","price_mean_gc","property_type_Aparthotel"                       
+           ,"property_type_Apartment","property_type_Bed and breakfast"                
+           ,"property_type_Boat","property_type_Boutique hotel", "property_type_Bungalow"                         
+           ,"property_type_Camper/RV","property_type_Condominium"                      
+           ,"property_type_Cottage","property_type_Earth house"                      
+           ,"property_type_Guesthouse","property_type_Hostel","property_type_Hotel"                            
+           ,"property_type_House","property_type_Loft", "property_type_Other"                            
+           ,"property_type_Resort","property_type_Serviced apartment"               
+           ,"property_type_Tiny house"                       
+           ,"property_type_Townhouse", "property_type_Villa","room_type_Entire home/apt"                      
+           ,"room_type_Private room","room_type_Shared room","new_neigh_c_Astoria"                            
+           ,"new_neigh_c_Bedford-Stuyvesant","new_neigh_c_Bushwick","new_neigh_c_Carroll Gardens"                    
+           ,"new_neigh_c_Chelsea","new_neigh_c_Chinatown","new_neigh_c_Clinton Hill"                       
+           ,"new_neigh_c_Crown Heights","new_neigh_c_Ditmars Steinway","new_neigh_c_East Elmhurst"                      
+           ,"new_neigh_c_East Flatbush","new_neigh_c_East Harlem","new_neigh_c_East New York"                      
+           ,"new_neigh_c_Elmhurst","new_neigh_c_Financial District","new_neigh_c_Flatbush"                           
+           ,"new_neigh_c_Flushing", "new_neigh_c_Fort Greene","new_neigh_c_Gowanus"                            
+           ,"new_neigh_c_Gramercy","new_neigh_c_Greenpoint","new_neigh_c_Greenwich Village"                  
+           ,"new_neigh_c_Harlem","new_neigh_c_Hell's Kitchen","new_neigh_c_Inwood"                             
+           ,"new_neigh_c_Jackson Heights","new_neigh_c_Jamaica","new_neigh_c_Kips Bay","new_neigh_c_Long Island City"                   
+           ,"new_neigh_c_Lower East Side","new_neigh_c_Midtown","new_neigh_c_Morningside Heights"                
+           ,"new_neigh_c_Murray Hill","new_neigh_c_Nolita","new_neigh_c_other"                              
+           ,"new_neigh_c_Park Slope", "new_neigh_c_Prospect-Lefferts Gardens","new_neigh_c_Prospect Heights"                   
+           ,"new_neigh_c_Ridgewood","new_neigh_c_SoHo","new_neigh_c_South Slope"                        
+           ,"new_neigh_c_Sunnyside","new_neigh_c_Sunset Park","new_neigh_c_Upper East Side"                    
+           ,"new_neigh_c_Upper West Side","new_neigh_c_Washington Heights"                 
+           ,"new_neigh_c_West Village", "new_neigh_c_Williamsburg"                           
+           ,"neighbourhood_group_cleansed_Brooklyn","neighbourhood_group_cleansed_Manhattan"         
+           ,"neighbourhood_group_cleansed_Queens","neighbourhood_group_cleansed_Staten Island")    
+
+
+## for the test dataset
+data_variables_test = test %>%
+    select("accommodates", "bathrooms","bedrooms" ,"beds","security_deposit","cleaning_fee"                                
+           ,"guests_included", "extra_people", "minimum_nights","maximum_nights","availability_30"                             
+           ,"availability_60","availability_90","availability_365","number_of_reviews" , "reviews_per_month"                           
+           ,"summary_wc","description_wc","transit_wc","host_about_wc","amenities_count"                             
+           ,"space_wc","neighborhood_overview_wc", "host_since_days","last_review_days"                            
+           ,"first_review_days","last_first_review_days","check_in_24","Accessible-heightbed"                        
+           ,"Accessible-heighttoilet","Airconditioning","Airpurifier","Babybath"                                    
+           ,"Bedlinens","Breakfast","CableTV","Carbonmonoxidedetector","cat"                              
+           ,"Dishwasher","dog","Doorman","Dryer","Elevator","Essentials","Family_and_kidfriendly"                      
+           ,"Fireextinguisher","Gym","Hairdryer","Handheldshowerhead","Hangers"                                     
+           ,"Heating","Hottub","Hotwater","Hotwaterkettle","Iron","Kitchen"                                     
+           ,"Laptopfriendlyworkspace", "Microwave","Oven"                             
+           ,"Safetycard","Selfcheck_in","Shampoo","Stove","toilet","TV"                                          
+           ,"Washer","Washer_and_Dryer","Waterfront","Wifi","email"                                       
+           ,"facebook", "google","government_id","identity_manual","jumio"                                       
+           ,"kba","phone","reviews","selfie","verification_count"                          
+           ,"record_count_c", "price_mean_c","price_mean_gc","property_type_Aparthotel"                       
+           ,"property_type_Apartment","property_type_Bed and breakfast"                
+           ,"property_type_Boat","property_type_Boutique hotel", "property_type_Bungalow"                         
+           ,"property_type_Camper/RV","property_type_Condominium"                      
+           ,"property_type_Cottage","property_type_Earth house"                      
+           ,"property_type_Guesthouse","property_type_Hostel","property_type_Hotel"                            
+           ,"property_type_House","property_type_Loft", "property_type_Other"                            
+           ,"property_type_Resort","property_type_Serviced apartment"               
+           ,"property_type_Tiny house"                       
+           ,"property_type_Townhouse", "property_type_Villa","room_type_Entire home/apt"                      
+           ,"room_type_Private room","room_type_Shared room","new_neigh_c_Astoria"                            
+           ,"new_neigh_c_Bedford-Stuyvesant","new_neigh_c_Bushwick","new_neigh_c_Carroll Gardens"                    
+           ,"new_neigh_c_Chelsea","new_neigh_c_Chinatown","new_neigh_c_Clinton Hill"                       
+           ,"new_neigh_c_Crown Heights","new_neigh_c_Ditmars Steinway","new_neigh_c_East Elmhurst"                      
+           ,"new_neigh_c_East Flatbush","new_neigh_c_East Harlem","new_neigh_c_East New York"                      
+           ,"new_neigh_c_Elmhurst","new_neigh_c_Financial District","new_neigh_c_Flatbush"                           
+           ,"new_neigh_c_Flushing", "new_neigh_c_Fort Greene","new_neigh_c_Gowanus"                            
+           ,"new_neigh_c_Gramercy","new_neigh_c_Greenpoint","new_neigh_c_Greenwich Village"                  
+           ,"new_neigh_c_Harlem","new_neigh_c_Hell's Kitchen","new_neigh_c_Inwood"                             
+           ,"new_neigh_c_Jackson Heights","new_neigh_c_Jamaica","new_neigh_c_Kips Bay","new_neigh_c_Long Island City"                   
+           ,"new_neigh_c_Lower East Side","new_neigh_c_Midtown","new_neigh_c_Morningside Heights"                
+           ,"new_neigh_c_Murray Hill","new_neigh_c_Nolita","new_neigh_c_other"                              
+           ,"new_neigh_c_Park Slope", "new_neigh_c_Prospect-Lefferts Gardens","new_neigh_c_Prospect Heights"                   
+           ,"new_neigh_c_Ridgewood","new_neigh_c_SoHo","new_neigh_c_South Slope"                        
+           ,"new_neigh_c_Sunnyside","new_neigh_c_Sunset Park","new_neigh_c_Upper East Side"                    
+           ,"new_neigh_c_Upper West Side","new_neigh_c_Washington Heights"                 
+           ,"new_neigh_c_West Village", "new_neigh_c_Williamsburg"                           
+           ,"neighbourhood_group_cleansed_Brooklyn","neighbourhood_group_cleansed_Manhattan"         
+           ,"neighbourhood_group_cleansed_Queens","neighbourhood_group_cleansed_Staten Island")    
+
+
+## for the scoring dataset
+score_variables = score_xgboost %>%
+    select("accommodates", "bathrooms","bedrooms" ,"beds","security_deposit","cleaning_fee"                                
+           ,"guests_included", "extra_people", "minimum_nights","maximum_nights","availability_30"                             
+           ,"availability_60","availability_90","availability_365","number_of_reviews" , "reviews_per_month"                           
+           ,"summary_wc","description_wc","transit_wc","host_about_wc","amenities_count"                             
+           ,"space_wc","neighborhood_overview_wc", "host_since_days","last_review_days"                            
+           ,"first_review_days","last_first_review_days","check_in_24","Accessible-heightbed"                        
+           ,"Accessible-heighttoilet","Airconditioning","Airpurifier","Babybath"                                    
+           ,"Bedlinens","Breakfast","CableTV","Carbonmonoxidedetector","cat"                              
+           ,"Dishwasher","dog","Doorman","Dryer","Elevator","Essentials","Family_and_kidfriendly"                      
+           ,"Fireextinguisher","Gym","Hairdryer","Handheldshowerhead","Hangers"                                     
+           ,"Heating","Hottub","Hotwater","Hotwaterkettle","Iron","Kitchen"                                     
+           ,"Laptopfriendlyworkspace", "Microwave","Oven"                             
+           ,"Safetycard","Selfcheck_in","Shampoo","Stove","toilet","TV"                                          
+           ,"Washer","Washer_and_Dryer","Waterfront","Wifi","email"                                       
+           ,"facebook", "google","government_id","identity_manual","jumio"                                       
+           ,"kba","phone","reviews","selfie","verification_count"                          
+           ,"record_count_c", "price_mean_c","price_mean_gc","property_type_Aparthotel"                       
+           ,"property_type_Apartment","property_type_Bed and breakfast"                
+           ,"property_type_Boat","property_type_Boutique hotel", "property_type_Bungalow"                         
+           ,"property_type_Camper/RV","property_type_Condominium"                      
+           ,"property_type_Cottage","property_type_Earth house"                      
+           ,"property_type_Guesthouse","property_type_Hostel","property_type_Hotel"                            
+           ,"property_type_House","property_type_Loft", "property_type_Other"                            
+           ,"property_type_Resort","property_type_Serviced apartment"               
+           ,"property_type_Tiny house"                       
+           ,"property_type_Townhouse", "property_type_Villa","room_type_Entire home/apt"                      
+           ,"room_type_Private room","room_type_Shared room","new_neigh_c_Astoria"                            
+           ,"new_neigh_c_Bedford-Stuyvesant","new_neigh_c_Bushwick","new_neigh_c_Carroll Gardens"                    
+           ,"new_neigh_c_Chelsea","new_neigh_c_Chinatown","new_neigh_c_Clinton Hill"                       
+           ,"new_neigh_c_Crown Heights","new_neigh_c_Ditmars Steinway","new_neigh_c_East Elmhurst"                      
+           ,"new_neigh_c_East Flatbush","new_neigh_c_East Harlem","new_neigh_c_East New York"                      
+           ,"new_neigh_c_Elmhurst","new_neigh_c_Financial District","new_neigh_c_Flatbush"                           
+           ,"new_neigh_c_Flushing", "new_neigh_c_Fort Greene","new_neigh_c_Gowanus"                            
+           ,"new_neigh_c_Gramercy","new_neigh_c_Greenpoint","new_neigh_c_Greenwich Village"                  
+           ,"new_neigh_c_Harlem","new_neigh_c_Hell's Kitchen","new_neigh_c_Inwood"                             
+           ,"new_neigh_c_Jackson Heights","new_neigh_c_Jamaica","new_neigh_c_Kips Bay","new_neigh_c_Long Island City"                   
+           ,"new_neigh_c_Lower East Side","new_neigh_c_Midtown","new_neigh_c_Morningside Heights"                
+           ,"new_neigh_c_Murray Hill","new_neigh_c_Nolita","new_neigh_c_other"                              
+           ,"new_neigh_c_Park Slope", "new_neigh_c_Prospect-Lefferts Gardens","new_neigh_c_Prospect Heights"                   
+           ,"new_neigh_c_Ridgewood","new_neigh_c_SoHo","new_neigh_c_South Slope"                        
+           ,"new_neigh_c_Sunnyside","new_neigh_c_Sunset Park","new_neigh_c_Upper East Side"                    
+           ,"new_neigh_c_Upper West Side","new_neigh_c_Washington Heights"                 
+           ,"new_neigh_c_West Village", "new_neigh_c_Williamsburg"                           
+           ,"neighbourhood_group_cleansed_Brooklyn","neighbourhood_group_cleansed_Manhattan"         
+           ,"neighbourhood_group_cleansed_Queens","neighbourhood_group_cleansed_Staten Island")    
+```
+
+```{r, message=FALSE}
+## create sparse matrix
+new_train = model.matrix(~.+0,data = data_variables) 
+new_test = model.matrix(~.+0,data = data_variables_test)
+new_score = model.matrix(~.+0,data = score_variables)
+labels = train$price
+ts_labels = test$price
+
+
+## build xgboosting models
+bst1 = xgboost(data = new_train, label = labels, max_depth = 4,
+               eta = 1, nthread = 2, nrounds = 5)
+
+## predict test dataset
+pred_xgb = predict(bst1, newdata = new_test)
+RMSE(pred_xgb, ts_labels)
+
+## predict scoring dataset
+pred_xgb1 = predict(bst1, newdata = new_score)
+```
+
+
+
+## Conclusion - RMSE Score
+
+Through building the linear models, random forest, boosting, and even the xgboosting, the RMSE score I got was decreasing greatly because of several reasons: finding the magic variables, increasing the tree number greatly, and using a new model. Below is the process.
+
+Model Used    |  RMSE Score |  Improvement Reason
+------------- | ----------- | -------------------------------------------------------------
+Linear Model  |  78.00437   | 
+Linear Model  |  77.86179   | 
+Linear Model  |  75.42101   | Impute missing values
+Linear Model  |  70.44313   | Add more variables
+Linear Model  |  69.55989   | 
+Random Forest |  61.08174   | Used new model
+Boosting      |  60.59830   | Trees = 10,000
+Random Forest |  57.03891   | Magic variable: mean price for each neighbourhood_cleansed level
+Boosting      |  56.42897   |  
+Boosting      |  55.69111   | Add more variables, trees = 30,000
+XGBoosting    |  55.69111   | Used a new model (save time)
+
+
+
+## Lessons Learned
+
+
+
+
+
+
+### Data Analysis Pipeline
+
+Through doing this kaggle project, I gained a deep understanding of data analysis pipeline, which is get data, exploratory data analysis, wrangle and tidy data, analyze data (build modelxs), communicate the result (data visualization), and share the project (which is exactly what this report intended to). More importantly, I realized that what does this sentence mean
+
+> "80 percent of a data scientist's valuable time is spent simply finding, cleansing, and organizing data, leaving only 20 percent to actually perform analysis."
+
+I spent amount of time cleaning and tidying the data so as to conduct further analysis, and I also learned the most through preprocessing the data. For example, I learned the regular expression when splitting the character column with invalid signs, practiced the data pipeline while creating new features, and knew how to create dummy variables in more than two ways (e.g. mtabulate, one-hot).
+
+
+
+
+
+
+### Data Analysis Tricks
+
+I also learned a few data analysis tricks during the project. However, it only based on my computer and experience. I would like to share in case other people meet the same problem. Please see the bullet points below.
+
+1. Read data
+   * read.csv: remember to set the argument "stringAsFactor" if needed. Sometimes it might coerce numeric data into factor and induce                problems as well as making the reading process so slow.
+   * read_csv: faster than read.csv, but it doesn't load factor variable automatically. So we might need to convert the data type.
+   * fread: friendly for large dataset. It might be the fastest way I have tried.
+
+2. Impute missing data
+   * Missing value: sometimes invalid value might not be NA, it could be blank("").
+   * Factor variable: could use addNA function to convert NA into a new level without specificall imputing the value
+   * integer variable: be careful about integer such as "8L", and might convert into numberic first
+   * Character variable: could count the word or character and impute with the mean count
+ 
+3. Feature Engineering
+   * For me, feature engineering process is more like creative thinking. We should think out of the box and do not only look into the      variables we have but also think what we can create based on current columns. Also, it also needs common sense and business logic      to help find the "magic" features.
+
+4. Build models
+   * Random Forest: 
+     + We could use the **importance(forest)** to check the variables importance and help select features
+     + The number of trees will not impact the performance greatly after exceeding 400, and it might takes so long if there are so 
+       many variables
+     + The random forest could be used to test the new variable during the feature engineering
+   * Boosting:
+     + We might try different values for boosting's parameter. For me, the depth = 5 turned out the best and smaller minobsinnode
+       performed better
+     + Increasing the number of trees by 10,000 can approximately decrease the RMSE score by 1. If the current variables are enough or        appropriate, we could use boosting with large tree number
+   * Prediction:
+     + There might be new levels in test or prediction dataset, we should find and replace them if the number is small 
+
+
+
+
+
+
+### Business Problem
+
+From this kaggle prediction, we can know that the price of a Airbnb house mainly relies on its neighbourhood, number of bedrooms, accommodates, room_type, etc. Based on this result, we could customize our strategies for renters and users.
+
+* **For renters**:
+  When a new renter register the Airbnb, the company can recommend his/her house'price based on the prediction model and smooth the process for renters to post housing information. Also, it can avoid the new renter exaggrating the price and his house might not be considered by other users.
+
+* **For users**:
+  We can tailor the customers recommendation strategies by similar price prediction models. For example, the Airbnb can push notifications about related house's price in the future to motivate the booking transaction. Moreover, we can customize the housing recommendation based on the models and customers price preference without harming the experience.
+
+
+
+
+
+
+## Appendix - Code
+
+Here is the code producing the smallest RMSE score. Boosting and XGBoosting model produced the same score, but I listed the Boosting model code here and it might take **nearly one hour** to run.
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+data = read.csv('analysisData.csv')
+scoring = read.csv('scoringData.csv')
+
+
+#################   imputing missing data #################
+for (i in 1:ncol(data)) {
+    if (is.numeric(data[,i])) {
+        data[is.na(data[,i]), i] = mean(data[,i], na.rm = TRUE)
+    }
+}
+
+for (i in 1:ncol(scoring)) {
+    if (is.numeric(scoring[,i])) {
+        scoring[is.na(scoring[,i]), i] = mean(scoring[,i], na.rm = TRUE)
+    }
+}
+
+data[apply(data, 2, function(x) x=="")] = NA
+scoring[apply(scoring, 2, function(x) x=="")] = NA
+
+for (i in 1:ncol(data)) {
+    if (is.factor(data[,i])) {
+        data[,i] = addNA(data[,i])
+    }
+}
+# sum(is.na(data$summary))
+
+for (i in 1:ncol(scoring)) {
+    if (is.factor(scoring[,i])) {
+        scoring[,i] = addNA(scoring[,i])
+    }
+}
+# sum(is.na(scoring$summary))
+
+#################  convert the data type  #################
+data$host_since = as.Date(data$host_since)
+data$first_review = as.Date(data$first_review)
+data$last_review = as.Date(data$last_review)
+
+scoring$host_since = as.Date(scoring$host_since)
+scoring$first_review = as.Date(scoring$first_review)
+scoring$last_review = as.Date(scoring$last_review)
+
+data$summary = as.character(data$summary)
+data$description = as.character(data$description)
+data$transit = as.character(data$transit)
+data$host_about = as.character(data$host_about)
+data$amenities = as.character(data$amenities)
+data$host_verifications = as.character(data$host_verifications)
+data$space = as.character(data$space)
+data$neighborhood_overview = as.character(data$neighborhood_overview)
+
+scoring$summary = as.character(scoring$summary)
+scoring$description = as.character(scoring$description)
+scoring$transit = as.character(scoring$transit)
+scoring$host_about = as.character(scoring$host_about)
+scoring$amenities = as.character(scoring$amenities)
+scoring$host_verifications = as.character(scoring$host_verifications)
+scoring$space = as.character(scoring$space)
+scoring$neighborhood_overview = as.character(scoring$neighborhood_overview)
+
+################# calculate words for character #################
+library(ngram)
+library(dplyr)
+data = data %>%
+    rowwise() %>%
+    mutate(summary_wc = wordcount(summary),
+           description_wc = wordcount(description),
+           transit_wc = wordcount(transit),
+           host_about_wc = wordcount(host_about),
+           amenities_count = wordcount(amenities),
+           space_wc = wordcount(space),
+           neighborhood_overview_wc = wordcount(neighborhood_overview))
+
+scoring = scoring %>%
+    rowwise() %>%
+    mutate(summary_wc = wordcount(summary),
+           description_wc = wordcount(description),
+           transit_wc = wordcount(transit),
+           host_about_wc = wordcount(host_about),
+           amenities_count = wordcount(amenities),
+           space_wc = wordcount(space),
+           neighborhood_overview_wc = wordcount(neighborhood_overview))
+
+################# create dummy variable for character   #################
+library(stringr)
+library(qdapTools)
+## First, remove the irrelevant sign in the column
+data$amenities = gsub("\\.", "", data$amenities)  ## remove the dot sign 
+data$amenities = data$amenities %>% stringr::str_replace_all("\\s", "")   ## remove the space
+data$amenities = noquote(data$amenities)   ##  remove quotation sign
+
+## Second split the column and create dummy variables
+data = cbind(data,mtabulate(strsplit(as.character(data$amenities), ',')))
+
+data$host_verifications = gsub("\\[", "", data$host_verifications) ## remove [
+data$host_verifications = gsub("\\]", "", data$host_verifications) ## remove ]
+data$host_verifications = gsub("\\'", "", data$host_verifications) ## remove '
+data$host_verifications = data$host_verifications %>% stringr::str_replace_all("\\s", "") ## remove the space
+data$host_verifications = noquote(data$host_verifications) ##  remove quotation sign
+
+## Create dummy variables
+data = cbind(data, mtabulate(strsplit(as.character(data$host_verifications), split = ','))) 
+
+## calculate the wordcount for the text column chosen
+data$host_identity_verified = as.character(data$host_identity_verified)
+data = data %>%
+    rowwise() %>%
+    mutate(verification_count = wordcount(host_identity_verified))
+
+
+## do the same thing on scoring data
+scoring$amenities = gsub("\\.", "", scoring$amenities)  
+scoring$amenities = scoring$amenities %>% stringr::str_replace_all("\\s", "")   
+scoring$amenities = noquote(scoring$amenities)  
+scoring = cbind(scoring,mtabulate(strsplit(as.character(scoring$amenities), ',')))
+
+## Then, the host_identifications column
+scoring$host_verifications = gsub("\\[", "", scoring$host_verifications)
+scoring$host_verifications = gsub("\\]", "", scoring$host_verifications)
+scoring$host_verifications = gsub("\\'", "", scoring$host_verifications)
+scoring$host_verifications = scoring$host_verifications %>% stringr::str_replace_all("\\s", "")
+scoring$host_verifications = noquote(scoring$host_verifications)
+scoring = cbind(scoring, mtabulate(strsplit(as.character(scoring$host_verifications), split = ',')))
+
+## Finally, count the total verification of host
+scoring$host_identity_verified = as.character(scoring$host_identity_verified)
+scoring = scoring %>%
+    rowwise() %>%
+    mutate(verification_count = wordcount(host_identity_verified))
+
+################# change some invalid column names #################
+colnames(data)[which(colnames(data) == '24-hourcheck-in')] = 'check_in_24'
+colnames(data)[which(colnames(data) == 'Cat(s)')] = 'cat'
+colnames(data)[which(colnames(data) == 'Dog(s)')] = 'dog'
+colnames(data)[which(colnames(data) == 'Otherpet(s)')] = 'otherpet'
+colnames(data)[which(colnames(data) == 'Washer/Dryer')] = 'Washer_and_Dryer'
+colnames(data)[which(colnames(data) == 'Selfcheck-in')] = 'Selfcheck_in'
+colnames(data)[which(colnames(data) == 'Family/kidfriendly')] = 'Family_and_kidfriendly'
+
+colnames(scoring)[which(colnames(scoring) == '24-hourcheck-in')] = 'check_in_24'
+colnames(scoring)[which(colnames(scoring) == 'Cat(s)')] = 'cat'
+colnames(scoring)[which(colnames(scoring) == 'Dog(s)')] = 'dog'
+colnames(scoring)[which(colnames(scoring) == 'Otherpet(s)')] = 'otherpet'
+colnames(scoring)[which(colnames(scoring) == 'Washer/Dryer')] = 'Washer_and_Dryer'
+colnames(scoring)[which(colnames(scoring) == 'Selfcheck-in')] = 'Selfcheck_in'
+colnames(scoring)[which(colnames(scoring) == 'Family/kidfriendly')] = 'Family_and_kidfriendly'
+
+################# date columns transformation #################
+data$host_since_days = as.numeric(as.Date("2019-11-25") - data$host_since)
+data$first_review_days = as.numeric(as.Date("2019-11-25") - data$first_review)
+data$last_review_days = as.numeric(as.Date("2019-11-25") - data$last_review)
+data$last_first_review_days = as.numeric(data$last_review - data$first_review)
+
+#sum(is.na(data$host_since_days))
+data[is.na(data$host_since_days),]$host_since_days = 0
+
+#sum(is.na(data$first_review_days))
+data[is.na(data$first_review_days),]$first_review_days = 0
+
+#sum(is.na(data$last_review_days))
+data[is.na(data$last_review_days),]$last_review_days = 0
+
+#sum(is.na(data$last_first_review_days))
+data[is.na(data$last_first_review_days),]$last_first_review_days = 0
+
+## do the same thing on scoring
+scoring$host_since_days = as.numeric(as.Date("2019-11-25") - scoring$host_since)
+scoring$first_review_days = as.numeric(as.Date("2019-11-25") - scoring$first_review)
+scoring$last_review_days = as.numeric(as.Date("2019-11-25") - scoring$last_review)
+scoring$last_first_review_days = as.numeric(scoring$last_review - scoring$first_review)
+
+#sum(is.na(scoring$host_since_days))
+scoring[is.na(scoring$host_since_days),]$host_since_days = 0
+
+#sum(is.na(scoring$first_review_days))
+#sum(is.na(scoring$last_review_days))
+#sum(is.na(scoring$last_first_review_days))
+
+
+################# handle factor variables with mutiple levels #################
+## data
+## create a data frame to use the neighbourhood_cleansed
+data1 = data %>%
+    group_by(neighbourhood_cleansed = neighbourhood_cleansed) %>%
+    summarize(record_count_c = n(),     ## count every level's record
+              price_mean_c = mean(price)) %>%  ## calculate each group's mean price
+    arrange(desc(record_count_c))
+#head(data1, 3)
+
+## merge the data frame and get the mean price and record counts
+data = merge(data, data1, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"))
+
+#class(data$neighbourhood_cleansed)
+
+## select the top 50 levels
+data$neighbourhood_cleansed = as.character(data$neighbourhood_cleansed) ## we need to convert it into character first in order to change the values
+data = data %>%
+    mutate(new_neigh_c = ifelse(record_count_c > 142, neighbourhood_cleansed, "other"))  ## find the top 49 levels and put others into "other" group
+data$neighbourhood_cleansed = as.factor(data$neighbourhood_cleansed)
+data$new_neigh_c = as.factor(data$new_neigh_c)
+
+## do the same thing on scoring
+## create a data frame to use the neighbourhood_cleansed
+scoring1 = scoring %>%
+    group_by(neighbourhood_cleansed = neighbourhood_cleansed) %>%
+    summarize(record_count_c = n()) %>%
+    arrange(desc(record_count_c))
+#head(scoring1, 3)
+
+## merge the data frame and get the mean price and record counts
+scoring = merge(scoring, scoring1, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"))
+
+scoring$neighbourhood_cleansed = as.character(scoring$neighbourhood_cleansed)
+scoring = scoring %>%
+    mutate(new_neigh_c = ifelse(record_count_c > 32, neighbourhood_cleansed, "other"))
+scoring$new_neigh_c = as.factor(scoring$new_neigh_c)
+
+## create price_mean_c for score_data 
+data2 = data.frame(neighbourhood_cleansed = data1$neighbourhood_cleansed,
+                           price_mean_c = data1$price_mean_c)
+
+scoring = merge(scoring, data2, by = c("neighbourhood_cleansed", "neighbourhood_cleansed"), all.x = TRUE) 
+### remember to use all.x = TRUE here to keep scoring as a whole
+
+## check the missing value
+#sum(is.na(scoring$price_mean_c))
+scoring[is.na(scoring$price_mean_c),]$price_mean_c = mean(scoring$price_mean_c, na.rm = TRUE)
+
+##################### create mean price for column neighbourhood_group_cleansed #################
+### data 
+## create a data frame to use the mean price of neighbourhood_group_cleansed
+data3 = data %>%
+    group_by(neighbourhood_group_cleansed = neighbourhood_group_cleansed) %>%
+    summarize(price_mean_gc = mean(price))
+
+## merge the data frame and get the mean price
+data = merge(data, data3, by = c("neighbourhood_group_cleansed", "neighbourhood_group_cleansed"))
+
+
+### scoring 
+## merge the data frame and get the mean price and record counts
+scoring = merge(scoring, data3, by = c("neighbourhood_group_cleansed", "neighbourhood_group_cleansed"), all.x = TRUE)
+
+## check missing value
+sum(is.na(scoring$price_mean_gc)) ## there is no NA
+
+
+
+##################### split data ##############################
+library(caret)
+set.seed(617)
+split = createDataPartition(y = data$price,
+                            p = 0.7,
+                            list = F,
+                            groups = 100)
+train = data[split,]
+test = data[-split,]
+nrow(train) + nrow(test) == nrow(data)
+
+
+##################### build boosting models ##############################
+
+library(gbm)
+set.seed(617)
+boostCV6 = gbm(price ~ price_mean_c + new_neigh_c + price_mean_gc + bedrooms + cleaning_fee + room_type + minimum_nights 
+               + accommodates + property_type + bathrooms + beds + neighbourhood_group_cleansed + host_is_superhost
+               + security_deposit + availability_30 + availability_365 + review_scores_rating + availability_60
+               + transit_wc + summary_wc+ description_wc+ host_since_days + reviews_per_month + cancellation_policy
+               + last_review_days + first_review_days + extra_people + guests_included + availability_90
+               + Airconditioning + Dryer + Elevator + Family_and_kidfriendly + Freestreetparking
+               + review_scores_cleanliness + Hairdryer + Iron + Oven + Refrigerator + Shampoo + number_of_reviews 
+               + host_about_wc + Selfcheck_in  + TV + selfie + kba + jumio + maximum_nights + host_listings_count 
+               + neighborhood_overview_wc + host_has_profile_pic + monthly_price + review_scores_accuracy
+               ,data = train, distribution = "gaussian", 
+               n.trees = 30000,   
+               interaction.depth = 5,
+               shrinkage = 0.005,
+               n.minobsinnode = 5)
+
+summary(boostCV6)
+
+## predict train dataset
+predBoostCV6 = predict(boostCV6, n.trees = 30000)
+RMSE(predBoostCV6, train$price)
+
+## predict test dataset
+predBoostCV6_test = predict(boostCV6, test, n.trees = 30000)
+RMSE(predBoostCV6, test$price)
+
+## predict scoring dataset
+pred_boostscore6 = predict(boostCV6, n.trees = 30000, newdata = scoring)
+
+
+
+##################### submission file ##############################
+
+submissionFile = data.frame(id = scoring$id, price = pred_boostscore6)
+write.csv(submissionFile, 'boost6_tree30000_submission.csv',row.names = F)
+
+```
+
